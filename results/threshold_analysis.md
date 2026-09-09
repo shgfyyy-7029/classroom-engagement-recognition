@@ -25,5 +25,5 @@ headpose_only (3维头部姿态，GRU hidden=128)，测试集30412样本
 - 自动警告学生：当前模型任何阈值下误报率都过高，不建议使用
 
 ## 图片
-[阈值曲线]
-<img width="1500" height="900" alt="threshold_metrics_curve" src="https://github.com/user-attachments/assets/242a828b-04db-44ff-9e6c-d058b2019a81" />
+
+![阈值曲线](../../threshold_metrics_curve.png)
