@@ -26,4 +26,4 @@ headpose_only (3维头部姿态，GRU hidden=128)，测试集30412样本
 
 ## 图片
 
-![阈值曲线](../../threshold_metrics_curve.png)
+![阈值曲线](threshold_metrics_curve.png)
