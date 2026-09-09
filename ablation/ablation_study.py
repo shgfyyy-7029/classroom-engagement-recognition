@@ -1,4 +1,4 @@
-"""消融实验重跑（正确阈值选择版，7配置×3种子）"""
+"""消融实验（正确版）：7配置×3种子，验证集选阈值"""
 import os
 import torch
 import torch.nn as nn
@@ -23,7 +23,7 @@ FEATURE_CONFIGS = {
     'body_pose_only': [1434, 1533],
     'headpose_only': [1533, 1536],
     'facemesh_body': [0, 1533],
-    'facemesh_head': [0, 1434, 1533, 1536],  # 特殊处理
+    'facemesh_head': [0, 1434, 1533, 1536],
     'headpose_body': [1434, 1536],
     'full': [0, 1544],
 }
@@ -46,14 +46,12 @@ class GRUClassifier(nn.Module):
 def load_split(split_file, config_name):
     with open(os.path.join(SPLIT_DIR, split_file), 'r') as f:
         files = [line.strip() for line in f if line.strip()]
-
     all_seqs, all_labels = [], []
     for fname in files:
         path = os.path.join(SEQUENCES_DIR, fname)
         if os.path.exists(path):
             data = torch.load(path)
             seqs = data['sequences']
-
             if config_name == 'facemesh_head':
                 face = seqs[:, :, 0:1434]
                 head = seqs[:, :, 1533:1536]
@@ -61,12 +59,10 @@ def load_split(split_file, config_name):
             else:
                 start, end = FEATURE_CONFIGS[config_name]
                 seqs = seqs[:, :, start:end]
-
             labels = data['labels'].clone()
             labels[labels == 2] = 1
             all_seqs.append(seqs)
             all_labels.append(labels)
-
     return torch.cat(all_seqs, dim=0), torch.cat(all_labels, dim=0)
 
 
@@ -93,16 +89,11 @@ def run_once(config_name, seed):
 
     input_dim = X_train.shape[2]
 
-    train_counts = Counter(y_train.tolist())
-    class_weights = torch.tensor([1.5, 0.8], dtype=torch.float).to(DEVICE)
-
-    sample_weights = [2.0 if label == 0 else 1.0 for label in y_train]
-    sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
-    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, sampler=sampler)
+    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=BATCH_SIZE, shuffle=False)
 
     model = GRUClassifier(input_dim=input_dim).to(DEVICE)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
@@ -144,9 +135,9 @@ def run_once(config_name, seed):
     best_val_f1 = 0
     for thresh in thresholds:
         preds = (val_probs >= thresh).astype(int)
-        f1_0 = f1_score(val_labels, preds, pos_label=0)
-        if f1_0 > best_val_f1:
-            best_val_f1 = f1_0
+        f1 = f1_score(val_labels, preds, pos_label=0)
+        if f1 > best_val_f1:
+            best_val_f1 = f1
             best_thresh = thresh
 
     test_probs, test_labels = get_probs(
@@ -162,61 +153,38 @@ def run_once(config_name, seed):
 
     print(f"  {config_name} seed{seed}: 维度={input_dim}, 阈值={best_thresh:.2f}, "
           f"准确率={acc:.4f}, 不参与F1={f1_0:.4f}, 召回={rec_0:.4f}, 精确={prec_0:.4f}, 参与F1={f1_1:.4f}")
-
     return [acc, f1_0, rec_0, prec_0, f1_1, best_thresh]
 
 
 def main():
     print("=" * 60)
-    print("消融实验重跑（正确阈值选择，7配置×3种子）")
+    print("消融实验（正确版，7配置×3种子）")
     print("=" * 60)
 
     all_results = {}
-
     for config_name in FEATURE_CONFIGS:
-        print(f"\n{'='*40}")
-        print(f"配置: {config_name}")
-        print(f"{'='*40}")
-        config_results = []
-        for seed in SEEDS:
-            config_results.append(run_once(config_name, seed))
+        print(f"\n{'='*40}\n配置: {config_name}\n{'='*40}")
+        config_results = [run_once(config_name, seed) for seed in SEEDS]
         all_results[config_name] = np.array(config_results)
 
-    # 汇总
-    print(f"\n\n{'='*80}")
-    print("最终汇总（每个配置3个种子的均值±标准差）")
-    print(f"{'='*80}")
-    print(f"{'配置':<20} {'维度':>6} {'准确率':>12} {'不参与F1':>14} {'不参与召回':>14} {'不参与精确':>14} {'参与F1':>12}")
-    print("-" * 95)
+    print(f"\n\n{'='*80}\n最终汇总\n{'='*80}")
+    print(f"{'配置':<20} {'准确率':>12} {'不参与F1':>14} {'不参与召回':>14} {'不参与精确':>14} {'参与F1':>12}")
+    print("-" * 80)
 
     with open(r"C:\DIPSER\ablation_correct_results.txt", 'w') as f:
-        f.write("消融实验重跑结果（正确阈值选择）\n")
-        f.write("=" * 60 + "\n\n")
+        f.write("消融实验结果（正确版）\n\n")
         for config_name, results in all_results.items():
             means = results.mean(axis=0)
             stds = results.std(axis=0)
-            dim = results.shape[1]
+            print(f"{config_name:<20} {means[0]:>12.4f} {means[1]:>14.4f} {means[2]:>14.4f} {means[3]:>14.4f} {means[4]:>12.4f}")
             f.write(f"{config_name}:\n")
-            f.write(f"  准确率:     {means[0]:.4f} ± {stds[0]:.4f}\n")
-            f.write(f"  不参与F1:   {means[1]:.4f} ± {stds[1]:.4f}\n")
+            f.write(f"  准确率: {means[0]:.4f} ± {stds[0]:.4f}\n")
+            f.write(f"  不参与F1: {means[1]:.4f} ± {stds[1]:.4f}\n")
             f.write(f"  不参与召回: {means[2]:.4f} ± {stds[2]:.4f}\n")
             f.write(f"  不参与精确: {means[3]:.4f} ± {stds[3]:.4f}\n")
-            f.write(f"  参与F1:     {means[4]:.4f} ± {stds[4]:.4f}\n")
-            f.write(f"  最优阈值:   {means[5]:.2f} ± {stds[5]:.2f}\n\n")
+            f.write(f"  参与F1: {means[4]:.4f} ± {stds[4]:.4f}\n\n")
 
-            dim = FEATURE_CONFIGS[config_name]
-            if config_name == 'facemesh_head':
-                dim_str = "1437"
-            elif config_name == 'facemesh_body':
-                dim_str = "1533"
-            elif config_name == 'headpose_body':
-                dim_str = "102"
-            else:
-                dim_str = str(dim[1] - dim[0] if isinstance(dim, list) and len(dim) == 2 else "?")
-            print(f"{config_name:<20} {dim_str:>6} {means[0]:>12.4f} {means[1]:>14.4f} "
-                  f"{means[2]:>14.4f} {means[3]:>14.4f} {means[4]:>12.4f}")
-
-    print(f"\n结果已保存到: C:\\DIPSER\\ablation_correct_results.txt")
+    print(f"\n结果已保存: C:\\DIPSER\\ablation_correct_results.txt")
 
 
 if __name__ == '__main__':
