@@ -1,13 +1,13 @@
 """
-二分类GRU训练
-输入：D:\DIPSER\sequences\ + 划分文件
-输出：C:\DIPSER\gru_binary_best.pt
+二分类GRU训练（无类别权重、无重采样）
+输入：D:\DIPSER\sequences\ + C:\DIPSER\ 下的划分文件
+输出：C:\DIPSER\gru_binary_final.pt
 """
 
 import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, TensorDataset
 from collections import Counter
 from sklearn.metrics import classification_report, confusion_matrix
 import numpy as np
@@ -15,7 +15,7 @@ import numpy as np
 # ==================== 配置 ====================
 SEQUENCES_DIR = r"D:\DIPSER\sequences"
 SPLIT_DIR = r"C:\DIPSER"
-MODEL_SAVE_PATH = r"C:\DIPSER\gru_binary_best.pt"
+MODEL_SAVE_PATH = r"C:\DIPSER\gru_binary_final.pt"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 BATCH_SIZE = 64
@@ -49,7 +49,7 @@ class GRUClassifier(nn.Module):
 
 
 def load_split(split_file):
-    """加载划分文件，标签2合并到标签1"""
+    """加载数据，标签2合并到标签1"""
     with open(os.path.join(SPLIT_DIR, split_file), 'r') as f:
         files = [line.strip() for line in f if line.strip()]
 
@@ -72,10 +72,11 @@ def load_split(split_file):
 
 def train():
     print("=" * 60)
-    print(f"二分类GRU训练 - 温和权重版 (设备: {DEVICE})")
+    print(f"二分类GRU训练 - 最终版 (设备: {DEVICE})")
+    print(f"配置: 无类别权重, 无重采样")
     print("=" * 60)
 
-    # 1. 加载数据
+    # 加载数据
     print("\n加载数据...")
     X_train, y_train = load_split('train_subjects.txt')
     X_val, y_val = load_split('val_subjects.txt')
@@ -85,31 +86,21 @@ def train():
     print(f"验证集: {X_val.shape}, 标签分布: {dict(Counter(y_val.tolist()))}")
     print(f"测试集: {X_test.shape}, 标签分布: {dict(Counter(y_test.tolist()))}")
 
-    # 2. 温和类别权重
-    class_weights = torch.tensor([1.5, 0.8], dtype=torch.float).to(DEVICE)
-    print(f"\n类别权重: 不参与={class_weights[0]:.1f}, 参与={class_weights[1]:.1f}")
+    # DataLoader
+    train_loader = DataLoader(TensorDataset(X_train, y_train),
+                              batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(TensorDataset(X_val, y_val),
+                            batch_size=BATCH_SIZE, shuffle=False)
 
-    # 3. 温和重采样
-    sample_weights = []
-    for label in y_train:
-        if label == 0:
-            sample_weights.append(2.0)
-        else:
-            sample_weights.append(1.0)
-
-    sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
-    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=BATCH_SIZE, sampler=sampler)
-    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=BATCH_SIZE, shuffle=False)
-
-    # 4. 模型
-    model = GRUClassifier(num_classes=2).to(DEVICE)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # 模型
+    model = GRUClassifier().to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', patience=5, factor=0.5
     )
 
-    # 5. 训练
+    # 训练
     best_val_loss = float('inf')
     patience_counter = 0
 
@@ -135,6 +126,7 @@ def train():
         train_acc = 100 * train_correct / train_total
         avg_train_loss = train_loss / len(train_loader)
 
+        # 验证
         model.eval()
         val_loss = 0
         val_correct = 0
@@ -168,13 +160,14 @@ def train():
                 print(f"早停触发 (Epoch {epoch+1})")
                 break
 
-    # 6. 测试集评估
+    # 测试集评估
     print(f"\n{'='*60}")
     print(f"最佳验证损失: {best_val_loss:.4f}")
     model.load_state_dict(torch.load(MODEL_SAVE_PATH))
     model.eval()
 
-    test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(TensorDataset(X_test, y_test),
+                             batch_size=BATCH_SIZE, shuffle=False)
     all_preds = []
     all_labels = []
 
@@ -185,7 +178,7 @@ def train():
             all_preds.extend(outputs.argmax(1).cpu().tolist())
             all_labels.extend(y.cpu().tolist())
 
-    print("\n测试集分类报告:")
+    print("\n测试集分类报告（默认阈值0.5）:")
     print(classification_report(
         all_labels, all_preds,
         target_names=['不参与(0)', '参与(1)'],
