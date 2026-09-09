@@ -1,13 +1,4 @@
-"""
-ablation_study.py
-7种特征组合的消融实验，每组合跑1次（种子42）
-特征维度划分（基于1544维顺序）：
-  facemesh: 0:1434
-  body_pose: 1434:1533
-  headpose: 1533:1536
-  bbox: 1536:1544
-"""
-
+"""消融实验重跑（正确阈值选择版，7配置×3种子）"""
 import os
 import torch
 import torch.nn as nn
@@ -16,7 +7,6 @@ from collections import Counter
 from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_score
 import numpy as np
 
-# ==================== 配置 ====================
 SEQUENCES_DIR = r"D:\DIPSER\sequences"
 SPLIT_DIR = r"C:\DIPSER"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -26,19 +16,17 @@ EPOCHS = 30
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 5e-4
 PATIENCE = 8
-SEED = 42
+SEEDS = [42, 123, 2024]
 
-# 7种特征组合
 FEATURE_CONFIGS = {
-    'facemesh_only':    [0, 1434],
-    'body_pose_only':   [1434, 1533],
-    'headpose_only':    [1533, 1536],
-    'headpose_body':    [1434, 1536],
-    'facemesh_head':    [0, 1434] + [1533, 1536],
-    'facemesh_body':    [0, 1533],
-    'full':             [0, 1544],
+    'facemesh_only': [0, 1434],
+    'body_pose_only': [1434, 1533],
+    'headpose_only': [1533, 1536],
+    'facemesh_body': [0, 1533],
+    'facemesh_head': [0, 1434, 1533, 1536],  # 特殊处理
+    'headpose_body': [1434, 1536],
+    'full': [0, 1544],
 }
-# =============================================
 
 
 class GRUClassifier(nn.Module):
@@ -50,25 +38,12 @@ class GRUClassifier(nn.Module):
             nn.Linear(hidden_dim, 64), nn.ReLU(), nn.Dropout(0.3),
             nn.Linear(64, num_classes)
         )
-
     def forward(self, x):
         _, h = self.gru(x)
         return self.fc(h[-1])
 
 
-def select_features(seqs, config):
-    """根据配置截取特征维度"""
-    if config == 'facemesh_head':
-        face = seqs[:, :, 0:1434]
-        head = seqs[:, :, 1533:1536]
-        return torch.cat([face, head], dim=2)
-    else:
-        start, end = FEATURE_CONFIGS[config]
-        return seqs[:, :, start:end]
-
-
-def load_split(split_file, config):
-    """加载数据，标签2合并到标签1"""
+def load_split(split_file, config_name):
     with open(os.path.join(SPLIT_DIR, split_file), 'r') as f:
         files = [line.strip() for line in f if line.strip()]
 
@@ -77,7 +52,16 @@ def load_split(split_file, config):
         path = os.path.join(SEQUENCES_DIR, fname)
         if os.path.exists(path):
             data = torch.load(path)
-            seqs = select_features(data['sequences'], config)
+            seqs = data['sequences']
+
+            if config_name == 'facemesh_head':
+                face = seqs[:, :, 0:1434]
+                head = seqs[:, :, 1533:1536]
+                seqs = torch.cat([face, head], dim=2)
+            else:
+                start, end = FEATURE_CONFIGS[config_name]
+                seqs = seqs[:, :, start:end]
+
             labels = data['labels'].clone()
             labels[labels == 2] = 1
             all_seqs.append(seqs)
@@ -86,17 +70,26 @@ def load_split(split_file, config):
     return torch.cat(all_seqs, dim=0), torch.cat(all_labels, dim=0)
 
 
-def train_single(config):
-    print(f"\n{'='*60}")
-    print(f"训练配置: {config}")
-    print(f"{'='*60}")
+def get_probs(model, loader):
+    model.eval()
+    probs, labels = [], []
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            outputs = model(x)
+            p = torch.softmax(outputs, dim=1)[:, 1]
+            probs.extend(p.cpu().tolist())
+            labels.extend(y.cpu().tolist())
+    return np.array(probs), np.array(labels)
 
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
 
-    X_train, y_train = load_split('train_subjects.txt', config)
-    X_val, y_val = load_split('val_subjects.txt', config)
-    X_test, y_test = load_split('test_subjects.txt', config)
+def run_once(config_name, seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    X_train, y_train = load_split('train_subjects.txt', config_name)
+    X_val, y_val = load_split('val_subjects.txt', config_name)
+    X_test, y_test = load_split('test_subjects.txt', config_name)
 
     input_dim = X_train.shape[2]
 
@@ -136,74 +129,94 @@ def train_single(config):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), f"C:\\DIPSER\\ablation_{config}.pt")
+            torch.save(model.state_dict(), f"C:\\DIPSER\\ablation_{config_name}_seed{seed}.pt")
             patience_counter = 0
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 break
 
-    model.load_state_dict(torch.load(f"C:\\DIPSER\\ablation_{config}.pt"))
-    model.eval()
+    model.load_state_dict(torch.load(f"C:\\DIPSER\\ablation_{config_name}_seed{seed}.pt"))
 
-    test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=BATCH_SIZE, shuffle=False)
-    preds, labels = [], []
-    with torch.no_grad():
-        for x, y in test_loader:
-            x, y = x.to(DEVICE), y.to(DEVICE)
-            preds.extend(model(x).argmax(1).cpu().tolist())
-            labels.extend(y.cpu().tolist())
+    val_probs, val_labels = get_probs(model, val_loader)
+    thresholds = np.arange(0.20, 0.81, 0.02)
+    best_thresh = 0.5
+    best_val_f1 = 0
+    for thresh in thresholds:
+        preds = (val_probs >= thresh).astype(int)
+        f1_0 = f1_score(val_labels, preds, pos_label=0)
+        if f1_0 > best_val_f1:
+            best_val_f1 = f1_0
+            best_thresh = thresh
 
-    acc = accuracy_score(labels, preds)
-    f1_0 = f1_score(labels, preds, pos_label=0)
-    rec_0 = recall_score(labels, preds, pos_label=0)
-    prec_0 = precision_score(labels, preds, pos_label=0)
-    f1_1 = f1_score(labels, preds, pos_label=1)
+    test_probs, test_labels = get_probs(
+        model, DataLoader(TensorDataset(X_test, y_test), batch_size=BATCH_SIZE, shuffle=False)
+    )
+    preds = (test_probs >= best_thresh).astype(int)
 
-    print(f"结果: 准确率={acc:.4f}, 不参与F1={f1_0:.4f}, "
-          f"召回={rec_0:.4f}, 精确={prec_0:.4f}, 参与F1={f1_1:.4f}")
+    acc = accuracy_score(test_labels, preds)
+    f1_0 = f1_score(test_labels, preds, pos_label=0)
+    rec_0 = recall_score(test_labels, preds, pos_label=0)
+    prec_0 = precision_score(test_labels, preds, pos_label=0)
+    f1_1 = f1_score(test_labels, preds, pos_label=1)
 
-    return {
-        'config': config,
-        'dim': input_dim,
-        'accuracy': acc,
-        'f1_0': f1_0,
-        'recall_0': rec_0,
-        'precision_0': prec_0,
-        'f1_1': f1_1
-    }
+    print(f"  {config_name} seed{seed}: 维度={input_dim}, 阈值={best_thresh:.2f}, "
+          f"准确率={acc:.4f}, 不参与F1={f1_0:.4f}, 召回={rec_0:.4f}, 精确={prec_0:.4f}, 参与F1={f1_1:.4f}")
+
+    return [acc, f1_0, rec_0, prec_0, f1_1, best_thresh]
 
 
 def main():
     print("=" * 60)
-    print("消融实验：7种特征组合对比")
+    print("消融实验重跑（正确阈值选择，7配置×3种子）")
     print("=" * 60)
 
-    results = []
-    for config in FEATURE_CONFIGS:
-        result = train_single(config)
-        results.append(result)
+    all_results = {}
 
-    print(f"\n\n{'='*70}")
-    print("消融实验汇总")
-    print(f"{'='*70}")
-    print(f"{'配置':<18} {'维度':>6} {'准确率':>8} {'不参与F1':>10} {'不参与召回':>10} {'不参与精确':>10} {'参与F1':>8}")
-    print("-" * 72)
-    for r in results:
-        print(f"{r['config']:<18} {r['dim']:>6} {r['accuracy']:>8.4f} "
-              f"{r['f1_0']:>10.4f} {r['recall_0']:>10.4f} {r['precision_0']:>10.4f} {r['f1_1']:>8.4f}")
+    for config_name in FEATURE_CONFIGS:
+        print(f"\n{'='*40}")
+        print(f"配置: {config_name}")
+        print(f"{'='*40}")
+        config_results = []
+        for seed in SEEDS:
+            config_results.append(run_once(config_name, seed))
+        all_results[config_name] = np.array(config_results)
 
-    # 保存结果
-    with open(r"C:\DIPSER\ablation_summary.txt", 'w') as f:
-        f.write("消融实验汇总\n")
-        f.write("=" * 70 + "\n")
-        f.write(f"{'配置':<18} {'维度':>6} {'准确率':>8} {'不参与F1':>10} {'不参与召回':>10} {'不参与精确':>10} {'参与F1':>8}\n")
-        f.write("-" * 72 + "\n")
-        for r in results:
-            f.write(f"{r['config']:<18} {r['dim']:>6} {r['accuracy']:>8.4f} "
-                    f"{r['f1_0']:>10.4f} {r['recall_0']:>10.4f} {r['precision_0']:>10.4f} {r['f1_1']:>8.4f}\n")
+    # 汇总
+    print(f"\n\n{'='*80}")
+    print("最终汇总（每个配置3个种子的均值±标准差）")
+    print(f"{'='*80}")
+    print(f"{'配置':<20} {'维度':>6} {'准确率':>12} {'不参与F1':>14} {'不参与召回':>14} {'不参与精确':>14} {'参与F1':>12}")
+    print("-" * 95)
 
-    print(f"\n结果已保存到: C:\\DIPSER\\ablation_summary.txt")
+    with open(r"C:\DIPSER\ablation_correct_results.txt", 'w') as f:
+        f.write("消融实验重跑结果（正确阈值选择）\n")
+        f.write("=" * 60 + "\n\n")
+        for config_name, results in all_results.items():
+            means = results.mean(axis=0)
+            stds = results.std(axis=0)
+            dim = results.shape[1]
+            f.write(f"{config_name}:\n")
+            f.write(f"  准确率:     {means[0]:.4f} ± {stds[0]:.4f}\n")
+            f.write(f"  不参与F1:   {means[1]:.4f} ± {stds[1]:.4f}\n")
+            f.write(f"  不参与召回: {means[2]:.4f} ± {stds[2]:.4f}\n")
+            f.write(f"  不参与精确: {means[3]:.4f} ± {stds[3]:.4f}\n")
+            f.write(f"  参与F1:     {means[4]:.4f} ± {stds[4]:.4f}\n")
+            f.write(f"  最优阈值:   {means[5]:.2f} ± {stds[5]:.2f}\n\n")
+
+            dim = FEATURE_CONFIGS[config_name]
+            if config_name == 'facemesh_head':
+                dim_str = "1437"
+            elif config_name == 'facemesh_body':
+                dim_str = "1533"
+            elif config_name == 'headpose_body':
+                dim_str = "102"
+            else:
+                dim_str = str(dim[1] - dim[0] if isinstance(dim, list) and len(dim) == 2 else "?")
+            print(f"{config_name:<20} {dim_str:>6} {means[0]:>12.4f} {means[1]:>14.4f} "
+                  f"{means[2]:>14.4f} {means[3]:>14.4f} {means[4]:>12.4f}")
+
+    print(f"\n结果已保存到: C:\\DIPSER\\ablation_correct_results.txt")
 
 
 if __name__ == '__main__':
