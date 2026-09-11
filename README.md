@@ -2,13 +2,32 @@
 
 ## 项目简介
 
-本项目基于DIPSER数据集，探索资源受限条件下（无大规模GPU、无预训练深度模型）的课堂学生参与度识别方法。系统比较了三种任务设定（二分类、三分类、回归）和七种特征组合，并对模型能力边界进行了严格评估。
+本项目基于DIPSER数据集，探索一种隐私友好、低部署成本的的课堂学生参与度识别方法。系统比较了三种任务设定（二分类、三分类、回归）和七种特征组合，并对模型能力边界进行了严格评估。
 
 ## 数据集
 
+本仓库**不包含数据集**。使用本项目需自行向DIPSER原作者申请数据集。
+
 - **DIPSER**: 西班牙阿利坎特大学发布的真实课堂多模态数据集
-- 使用官方结构化特征（MediaPipe facemesh + body_pose + headpose + bbox），共1544维
-- 标签来自四位专家标注，多数投票融合
+- **数据申请地址**: https://www.scidb.cn/en/detail?dataSetId=7856c716c0cc4589a23ee4a23d8a0893
+- **官方GitHub仓库**: https://github.com/luis-marquez/DIPSER-A-Dataset-for-In-Person-Student-Emotion-and-Engagement-Recognition-in-the-Wild
+- 本项目使用官方结构化特征（MediaPipe facemesh + body_pose + headpose + bbox），共1544维
+- 标签来自四位专家标注，经多数投票融合
+
+### 引用
+
+如果使用本仓库代码，请同时引用DIPSER原论文：
+
+```bibtex
+@misc{marquezcarpintero2025dipserdatasetinpersonstudent,
+  title={DIPSER: A Dataset for In-Person Student Engagement Recognition in the Wild},
+  author={Marquez-Carpintero, Luis and Suescun-Ferrandiz, Sergio and Lorenzo Álvarez, Carolina and Fernandez-Herrero, Jorge and Viejo, Diego and Roig-Vila, Rosabel and Cazorla, Miguel},
+  year={2025},
+  eprint={2502.20209},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  url={https://arxiv.org/abs/2502.20209}
+}
 
 ## 方法
 
