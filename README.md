@@ -155,7 +155,7 @@
 pip install -r requirements.txt
 
 # 运行消融实验（需要先准备好DIPSER数据和序列数据）
-python ablation/ablation_correct.py
+python ablation/ablation_study.py
 
 # 运行基线对比
 python baseline/baseline_lr_mlp.py
