@@ -1,4 +1,4 @@
-"""消融实验（正确版）：7配置×3种子，验证集选阈值"""
+"""消融实验：7配置×3种子，验证集选阈值"""
 import os
 import torch
 import torch.nn as nn
