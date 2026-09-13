@@ -1,29 +1,38 @@
-"""类别权重与重采样策略消融（全特征1544维）"""
+"""
+类别不平衡处理策略对比（完整版）
+四种配置各3种子，验证集选阈值
+配置A：无处理
+配置B：标准类别权重（反频率公式）
+配置C：2倍重采样
+配置D：标准类别权重+2倍重采样
+"""
 import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_score, roc_auc_score
 from collections import Counter
-from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_score
 import numpy as np
 
+# ==================== 配置 ====================
 SEQUENCES_DIR = r"D:\DIPSER\sequences"
 SPLIT_DIR = r"C:\DIPSER"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 BATCH_SIZE = 64
-EPOCHS = 30
+EPOCHS = 50
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 5e-4
-PATIENCE = 8
-SEED = 42
+PATIENCE = 10
+SEEDS = [42, 123, 2024]
 
 CONFIGS = {
-    'A_无权重无重采样': {'use_class_weights': False, 'use_sampler': False},
-    'B_仅类别权重': {'use_class_weights': True, 'use_sampler': False},
-    'C_仅重采样': {'use_class_weights': False, 'use_sampler': True},
-    'D_权重加重采样': {'use_class_weights': True, 'use_sampler': True},
+    'A_无处理':      {'use_class_weights': False, 'use_sampler': False},
+    'B_标准权重':    {'use_class_weights': True,  'use_sampler': False},
+    'C_2倍重采样':   {'use_class_weights': False, 'use_sampler': True},
+    'D_权重加重采样': {'use_class_weights': True,  'use_sampler': True},
 }
+# =============================================
 
 
 class GRUClassifier(nn.Module):
@@ -68,9 +77,20 @@ def get_probs(model, loader):
     return np.array(probs), np.array(labels)
 
 
-def run_once(config_name, use_cw, use_sampler):
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
+def find_best_threshold(probs, labels):
+    best_thresh, best_f1 = 0.5, 0
+    for thresh in np.arange(0.20, 0.81, 0.02):
+        preds = (probs >= thresh).astype(int)
+        f1 = f1_score(labels, preds, pos_label=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thresh = thresh
+    return best_thresh
+
+
+def run_once(config_name, use_cw, use_sampler, seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     X_train, y_train = load_split('train_subjects.txt')
     X_val, y_val = load_split('val_subjects.txt')
@@ -79,7 +99,10 @@ def run_once(config_name, use_cw, use_sampler):
     # 损失函数
     if use_cw:
         train_counts = Counter(y_train.tolist())
-        class_weights = torch.tensor([1.5, 0.8], dtype=torch.float).to(DEVICE)
+        total = sum(train_counts.values())
+        w0 = total / (2 * train_counts[0])
+        w1 = total / (2 * train_counts[1])
+        class_weights = torch.tensor([w0, w1], dtype=torch.float).to(DEVICE)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
     else:
         criterion = nn.CrossEntropyLoss()
@@ -121,27 +144,18 @@ def run_once(config_name, use_cw, use_sampler):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), f"C:\\DIPSER\\weight_ablation_{config_name}.pt")
+            torch.save(model.state_dict(), f"C:\\DIPSER\\imb_{config_name}_seed{seed}.pt")
             patience_counter = 0
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 break
 
-    model.load_state_dict(torch.load(f"C:\\DIPSER\\weight_ablation_{config_name}.pt"))
+    model.load_state_dict(torch.load(f"C:\\DIPSER\\imb_{config_name}_seed{seed}.pt"))
 
-    # 验证集选阈值
     val_probs, val_labels = get_probs(model, val_loader)
-    best_thresh = 0.5
-    best_val_f1 = 0
-    for thresh in np.arange(0.20, 0.81, 0.02):
-        preds = (val_probs >= thresh).astype(int)
-        f1 = f1_score(val_labels, preds, pos_label=0)
-        if f1 > best_val_f1:
-            best_val_f1 = f1
-            best_thresh = thresh
+    best_thresh = find_best_threshold(val_probs, val_labels)
 
-    # 测试集评估
     test_probs, test_labels = get_probs(
         model, DataLoader(TensorDataset(X_test, y_test), batch_size=BATCH_SIZE, shuffle=False)
     )
@@ -151,37 +165,51 @@ def run_once(config_name, use_cw, use_sampler):
     f1_0 = f1_score(test_labels, preds, pos_label=0)
     rec_0 = recall_score(test_labels, preds, pos_label=0)
     prec_0 = precision_score(test_labels, preds, pos_label=0)
-    f1_1 = f1_score(test_labels, preds, pos_label=1)
+    auc = roc_auc_score(test_labels, test_probs)
 
-    print(f"{config_name}: 阈值={best_thresh:.2f}, 准确率={acc:.4f}, "
-          f"不参与F1={f1_0:.4f}, 召回={rec_0:.4f}, 精确={prec_0:.4f}, 参与F1={f1_1:.4f}")
+    print(f"  {config_name} seed{seed}: 阈值={best_thresh:.2f}, 准确率={acc:.4f}, "
+          f"不参与F1={f1_0:.4f}, 召回={rec_0:.4f}, 精确={prec_0:.4f}, AUC={auc:.4f}")
+    return [acc, f1_0, rec_0, prec_0, auc]
 
-    return [acc, f1_0, rec_0, prec_0, f1_1, best_thresh]
+
+def main():
+    print("=" * 70)
+    print("类别不平衡处理策略对比（4配置×3种子）")
+    print("=" * 70)
+
+    all_results = {}
+
+    for config_name, cfg in CONFIGS.items():
+        print(f"\n{'='*50}")
+        print(f"配置: {config_name}")
+        print(f"{'='*50}")
+        results = []
+        for seed in SEEDS:
+            results.append(run_once(config_name, cfg['use_class_weights'], cfg['use_sampler'], seed))
+        all_results[config_name] = np.array(results)
+
+    print(f"\n\n{'='*90}")
+    print("最终汇总")
+    print(f"{'='*90}")
+    print(f"{'配置':<18} {'准确率':>14} {'不参与F1':>14} {'不参与召回':>14} {'不参与精确':>14} {'AUC':>12}")
+    print("-" * 95)
+
+    with open(r"C:\DIPSER\imbalance_comparison_results.txt", 'w') as f:
+        f.write("类别不平衡处理策略对比结果\n\n")
+        for config_name, results in all_results.items():
+            means = results.mean(axis=0)
+            stds = results.std(axis=0)
+            print(f"{config_name:<18} {means[0]:.4f}±{stds[0]:.4f} {means[1]:.4f}±{stds[1]:.4f} "
+                  f"{means[2]:.4f}±{stds[2]:.4f} {means[3]:.4f}±{stds[3]:.4f} {means[4]:.4f}±{stds[4]:.4f}")
+            f.write(f"{config_name}:\n")
+            f.write(f"  准确率: {means[0]:.4f} ± {stds[0]:.4f}\n")
+            f.write(f"  不参与F1: {means[1]:.4f} ± {stds[1]:.4f}\n")
+            f.write(f"  不参与召回: {means[2]:.4f} ± {stds[2]:.4f}\n")
+            f.write(f"  不参与精确: {means[3]:.4f} ± {stds[3]:.4f}\n")
+            f.write(f"  AUC: {means[4]:.4f} ± {stds[4]:.4f}\n\n")
+
+    print(f"\n结果已保存: C:\\DIPSER\\imbalance_comparison_results.txt")
 
 
-print("权重与重采样消融（全特征1544维，seed 42）")
-print("=" * 50)
-
-results = {}
-for name, cfg in CONFIGS.items():
-    results[name] = run_once(name, cfg['use_class_weights'], cfg['use_sampler'])
-
-print(f"\n汇总:")
-print(f"{'配置':<20} {'准确率':>8} {'不参与F1':>10} {'召回':>8} {'精确':>8} {'参与F1':>8}")
-print("-" * 65)
-for name, r in results.items():
-    print(f"{name:<20} {r[0]:>8.4f} {r[1]:>10.4f} {r[2]:>8.4f} {r[3]:>8.4f} {r[4]:>8.4f}")
-
-with open(r"C:\DIPSER\weight_ablation_results.txt", 'w') as f:
-    f.write("权重与重采样消融（全特征1544维，seed 42）\n")
-    f.write("=" * 50 + "\n\n")
-    for name, r in results.items():
-        f.write(f"{name}:\n")
-        f.write(f"  准确率: {r[0]:.4f}\n")
-        f.write(f"  不参与F1: {r[1]:.4f}\n")
-        f.write(f"  不参与召回: {r[2]:.4f}\n")
-        f.write(f"  不参与精确: {r[3]:.4f}\n")
-        f.write(f"  参与F1: {r[4]:.4f}\n")
-        f.write(f"  最优阈值: {r[5]:.2f}\n\n")
-
-print(f"\n结果已保存: C:\\DIPSER\\weight_ablation_results.txt")
+if __name__ == '__main__':
+    main()
