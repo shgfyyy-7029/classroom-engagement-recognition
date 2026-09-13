@@ -1,15 +1,14 @@
 """
-二分类GRU训练（无类别权重、无重采样）
+二分类GRU训练（C配置：2倍重采样）
 输入：D:\DIPSER\sequences\ + C:\DIPSER\ 下的划分文件
 输出：C:\DIPSER\gru_binary_final.pt
 """
-
 import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from collections import Counter
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 import numpy as np
 
 # ==================== 配置 ====================
@@ -70,10 +69,22 @@ def load_split(split_file):
     return X, y
 
 
+def find_best_threshold(probs, labels):
+    """在验证集上找不参与F1最大的阈值"""
+    from sklearn.metrics import f1_score
+    best_thresh, best_f1 = 0.5, 0
+    for thresh in np.arange(0.20, 0.81, 0.02):
+        preds = (probs >= thresh).astype(int)
+        f1 = f1_score(labels, preds, pos_label=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thresh = thresh
+    return best_thresh
+
+
 def train():
     print("=" * 60)
-    print(f"二分类GRU训练 - 最终版 (设备: {DEVICE})")
-    print(f"配置: 无类别权重, 无重采样")
+    print(f"二分类GRU训练 - C配置（2倍重采样） (设备: {DEVICE})")
     print("=" * 60)
 
     # 加载数据
@@ -86,9 +97,11 @@ def train():
     print(f"验证集: {X_val.shape}, 标签分布: {dict(Counter(y_val.tolist()))}")
     print(f"测试集: {X_test.shape}, 标签分布: {dict(Counter(y_test.tolist()))}")
 
-    # DataLoader
+    # C配置：2倍重采样
+    sample_weights = [2.0 if label == 0 else 1.0 for label in y_train]
+    sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
     train_loader = DataLoader(TensorDataset(X_train, y_train),
-                              batch_size=BATCH_SIZE, shuffle=True)
+                              batch_size=BATCH_SIZE, sampler=sampler)
     val_loader = DataLoader(TensorDataset(X_val, y_val),
                             batch_size=BATCH_SIZE, shuffle=False)
 
@@ -166,27 +179,48 @@ def train():
     model.load_state_dict(torch.load(MODEL_SAVE_PATH))
     model.eval()
 
+    # 验证集选阈值
+    val_probs, val_labels = [], []
+    with torch.no_grad():
+        for x, y in val_loader:
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            outputs = model(x)
+            p = torch.softmax(outputs, dim=1)[:, 1]
+            val_probs.extend(p.cpu().tolist())
+            val_labels.extend(y.cpu().tolist())
+
+    best_thresh = find_best_threshold(np.array(val_probs), np.array(val_labels))
+    print(f"验证集最优阈值: {best_thresh:.2f}")
+
+    # 测试集用该阈值评估
     test_loader = DataLoader(TensorDataset(X_test, y_test),
                              batch_size=BATCH_SIZE, shuffle=False)
-    all_preds = []
-    all_labels = []
+    test_probs, test_labels = [], []
 
     with torch.no_grad():
         for x, y in test_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
             outputs = model(x)
-            all_preds.extend(outputs.argmax(1).cpu().tolist())
-            all_labels.extend(y.cpu().tolist())
+            p = torch.softmax(outputs, dim=1)[:, 1]
+            test_probs.extend(p.cpu().tolist())
+            test_labels.extend(y.cpu().tolist())
 
-    print("\n测试集分类报告（默认阈值0.5）:")
+    test_probs = np.array(test_probs)
+    test_labels = np.array(test_labels)
+    preds = (test_probs >= best_thresh).astype(int)
+
+    print(f"\n测试集分类报告（阈值={best_thresh:.2f}）:")
     print(classification_report(
-        all_labels, all_preds,
+        test_labels, preds,
         target_names=['不参与(0)', '参与(1)'],
         digits=4
     ))
 
+    auc = roc_auc_score(test_labels, test_probs)
+    print(f"测试集 AUC: {auc:.4f}")
+
     print("\n混淆矩阵:")
-    cm = confusion_matrix(all_labels, all_preds)
+    cm = confusion_matrix(test_labels, preds)
     print("        预测0  预测1")
     for i, row in enumerate(cm):
         print(f"真实{i}    {row[0]:>5}  {row[1]:>5}")
