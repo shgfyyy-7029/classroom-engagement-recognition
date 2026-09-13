@@ -1,9 +1,8 @@
-"""消融实验：7配置×3种子，验证集选阈值"""
+"""消融实验：7配置×3种子，EPOCHS=50, patience=10"""
 import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
-from collections import Counter
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_score
 import numpy as np
 
@@ -12,10 +11,10 @@ SPLIT_DIR = r"C:\DIPSER"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 BATCH_SIZE = 64
-EPOCHS = 30
+EPOCHS = 50
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 5e-4
-PATIENCE = 8
+PATIENCE = 10
 SEEDS = [42, 123, 2024]
 
 FEATURE_CONFIGS = {
@@ -120,14 +119,14 @@ def run_once(config_name, seed):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), f"C:\\DIPSER\\ablation_{config_name}_seed{seed}.pt")
+            torch.save(model.state_dict(), f"C:\\DIPSER\\ablation_final_{config_name}_seed{seed}.pt")
             patience_counter = 0
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 break
 
-    model.load_state_dict(torch.load(f"C:\\DIPSER\\ablation_{config_name}_seed{seed}.pt"))
+    model.load_state_dict(torch.load(f"C:\\DIPSER\\ablation_final_{config_name}_seed{seed}.pt"))
 
     val_probs, val_labels = get_probs(model, val_loader)
     thresholds = np.arange(0.20, 0.81, 0.02)
@@ -152,13 +151,13 @@ def run_once(config_name, seed):
     f1_1 = f1_score(test_labels, preds, pos_label=1)
 
     print(f"  {config_name} seed{seed}: 维度={input_dim}, 阈值={best_thresh:.2f}, "
-          f"准确率={acc:.4f}, 不参与F1={f1_0:.4f}, 召回={rec_0:.4f}, 精确={prec_0:.4f}, 参与F1={f1_1:.4f}")
+          f"准确率={acc:.4f}, 不参与F1={f1_0:.4f}, 召回={rec_0:.4f}, 精确={prec_0:.4f}")
     return [acc, f1_0, rec_0, prec_0, f1_1, best_thresh]
 
 
 def main():
     print("=" * 60)
-    print("消融实验（正确版，7配置×3种子）")
+    print("消融实验（最终版，7配置×3种子，EPOCHS=50）")
     print("=" * 60)
 
     all_results = {}
@@ -168,23 +167,23 @@ def main():
         all_results[config_name] = np.array(config_results)
 
     print(f"\n\n{'='*80}\n最终汇总\n{'='*80}")
-    print(f"{'配置':<20} {'准确率':>12} {'不参与F1':>14} {'不参与召回':>14} {'不参与精确':>14} {'参与F1':>12}")
+    print(f"{'配置':<20} {'准确率':>14} {'不参与F1':>14} {'不参与召回':>14} {'不参与精确':>14}")
     print("-" * 80)
 
-    with open(r"C:\DIPSER\ablation_correct_results.txt", 'w') as f:
-        f.write("消融实验结果（正确版）\n\n")
+    with open(r"C:\DIPSER\ablation_final_results.txt", 'w') as f:
+        f.write("消融实验最终结果（EPOCHS=50, patience=10）\n\n")
         for config_name, results in all_results.items():
             means = results.mean(axis=0)
             stds = results.std(axis=0)
-            print(f"{config_name:<20} {means[0]:>12.4f} {means[1]:>14.4f} {means[2]:>14.4f} {means[3]:>14.4f} {means[4]:>12.4f}")
+            print(f"{config_name:<20} {means[0]:.4f}±{stds[0]:.4f} {means[1]:.4f}±{stds[1]:.4f} "
+                  f"{means[2]:.4f}±{stds[2]:.4f} {means[3]:.4f}±{stds[3]:.4f}")
             f.write(f"{config_name}:\n")
             f.write(f"  准确率: {means[0]:.4f} ± {stds[0]:.4f}\n")
             f.write(f"  不参与F1: {means[1]:.4f} ± {stds[1]:.4f}\n")
             f.write(f"  不参与召回: {means[2]:.4f} ± {stds[2]:.4f}\n")
-            f.write(f"  不参与精确: {means[3]:.4f} ± {stds[3]:.4f}\n")
-            f.write(f"  参与F1: {means[4]:.4f} ± {stds[4]:.4f}\n\n")
+            f.write(f"  不参与精确: {means[3]:.4f} ± {stds[3]:.4f}\n\n")
 
-    print(f"\n结果已保存: C:\\DIPSER\\ablation_correct_results.txt")
+    print(f"\n结果已保存: C:\\DIPSER\\ablation_final_results.txt")
 
 
 if __name__ == '__main__':
